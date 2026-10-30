@@ -1,0 +1,232 @@
+# ==========================================
+# MICROUSERS
+# ==========================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microusers
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: microusers
+  template:
+    metadata:
+      labels:
+        app: microusers
+      annotations:
+        sidecar.istio.io/rewriteAppHTTPProbe: "true"
+    spec:
+      containers:
+      - name: microusers
+        image: juanvila310/microusers:v2 # Aqui va la imagen de dockerhub con su versión
+        ports:
+        - containerPort: 5002
+        env:
+        - name: MYSQL_HOST
+          value: "users-db-service"
+        - name: MYSQL_USER
+          value: "app"
+        - name: MYSQL_PASSWORD
+          value: "app_password"
+        - name: MYSQL_DB
+          value: "users_db"
+        - name: SECRET_KEY
+          value: "secret123"
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "256Mi"}
+        readinessProbe:
+          httpGet: {path: /health, port: 5002}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /health, port: 5002}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microusers
+spec:
+  selector:
+    app: microusers
+  ports:
+    - port: 5002
+      targetPort: 5002
+
+# ==========================================
+# MICROPRODUCTS
+# ==========================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microproducts
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: microproducts
+  template:
+    metadata:
+      labels:
+        app: microproducts
+      annotations:
+        sidecar.istio.io/rewriteAppHTTPProbe: "true"
+    spec:
+      containers:
+      - name: microproducts
+        image: juanvila310/microproducts:v2 # Aqui va la imagen de dockerhub con su versión
+        ports:
+        - containerPort: 5003
+        env:
+        - name: MYSQL_HOST
+          value: "products-db-service"
+        - name: MYSQL_USER
+          value: "app"
+        - name: MYSQL_PASSWORD
+          value: "app_password"
+        - name: MYSQL_DB
+          value: "products_db"
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "256Mi"}
+        readinessProbe:
+          httpGet: {path: /health, port: 5003}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /health, port: 5003}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microproducts
+spec:
+  selector:
+    app: microproducts
+  ports:
+    - port: 5003
+      targetPort: 5003
+
+# ==========================================
+# MICROORDERS
+# ==========================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: microorders
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: microorders
+  template:
+    metadata:
+      labels:
+        app: microorders
+      annotations:
+        sidecar.istio.io/rewriteAppHTTPProbe: "true"
+    spec:
+      containers:
+      - name: microorders
+        image: juanvila310/microorders:v2 # Aqui va la imagen de dockerhub con su versión
+        ports:
+        - containerPort: 5004
+        env:
+        - name: MYSQL_HOST
+          value: "orders-db-service"
+        - name: MYSQL_USER
+          value: "app"
+        - name: MYSQL_PASSWORD
+          value: "app_password"
+        - name: MYSQL_DB
+          value: "orders_db"
+        - name: PRODUCTS_SERVICE_URL
+          value: "http://microproducts:5003"
+        - name: SECRET_KEY
+          value: "secret123"
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "256Mi"}
+        readinessProbe:
+          httpGet: {path: /health, port: 5004}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /health, port: 5004}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: microorders
+spec:
+  selector:
+    app: microorders
+  ports:
+    - port: 5004
+      targetPort: 5004
+
+# ==========================================
+# FRONTEND
+# ==========================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+      annotations:
+        sidecar.istio.io/rewriteAppHTTPProbe: "true"
+    spec:
+      containers:
+      - name: frontend
+        image: juanvila310/frontend:v2 # Aqui va la imagen de dockerhub con su versión
+        ports:
+        - containerPort: 5001
+        env:
+        - name: USERS_SERVICE_URL
+          value: "http://microusers:5002"
+        - name: PRODUCTS_SERVICE_URL
+          value: "http://microproducts:5003"
+        - name: ORDERS_SERVICE_URL
+          value: "http://microorders:5004"
+        - name: SECRET_KEY
+          value: "secret123"
+        resources:
+          requests: {cpu: "100m", memory: "128Mi"}
+          limits: {cpu: "500m", memory: "256Mi"}
+        readinessProbe:
+          httpGet: {path: /health, port: 5001}
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        livenessProbe:
+          httpGet: {path: /health, port: 5001}
+          initialDelaySeconds: 15
+          periodSeconds: 20
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+spec:
+  selector:
+    app: frontend
+  ports:
+    - port: 5001
+      targetPort: 5001
