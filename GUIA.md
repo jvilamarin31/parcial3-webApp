@@ -141,3 +141,101 @@ Si deseas borrar todo por completo y empezar de cero:
 ```bash
 minikube delete
 ```
+# 🛡️ Requerimiento 3.2: Service Mesh (Istio), mTLS y Kiali
+
+## 1. Requisitos Previos
+Antes de desplegar Istio en el clúster, el entorno local de Kubernetes debe estar activo y contar con las herramientas de análisis instaladas.
+
+```bash
+# Iniciar el clúster si se encuentra detenido
+minikube start --driver=docker --cpus=2 --memory=4096
+
+# Instalar jq (necesario para leer los JSON de Istio y extraer los certificados)
+sudo apt update && sudo apt install -y jq
+```
+
+---
+
+## 2. Instalación de Istio y Herramientas de Visualización
+
+La instalación se divide en la descarga de la CLI en el host (sin necesidad de tener el clúster iniciado) y el despliegue del plano de control e instrumental en Minikube (requiere el clúster activo).
+
+### A. Descargar e instalar la CLI de Istio (Local en el Host)
+```bash
+# Descargar e instalar el cliente de Istio de forma global en /usr/local/bin
+curl -L https://istio.io/downloadIstio | sh -
+cd istio-*
+sudo cp bin/istioctl /usr/local/bin/
+cd .. && rm -rf istio-*
+```
+
+### B. Instalar Istio y Add-ons (En el Clúster - Requiere Minikube activo)
+```bash
+# 1. Instalar el plano de control y gateways de Istio
+istioctl install --set profile=demo -y
+
+# 2. Instalar los dashboards de observabilidad (Kiali, Prometheus, Grafana, Jaeger)
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.31/samples/addons/kiali.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.31/samples/addons/prometheus.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.31/samples/addons/grafana.yaml
+kubectl apply -f https://raw.githubusercontent.com/istio/istio/release-1.31/samples/addons/jaeger.yaml
+```
+
+---
+
+## 3. Habilitar el Sidecar e Inyectar Istio
+
+Para que Istio gestione el tráfico, se habilita la inyección automática del proxy Envoy en los Pods del namespace `default`:
+
+```bash
+# 1. Habilitar la inyección automática en el namespace default
+kubectl label namespace default istio-injection=enabled
+
+# 2. Reiniciar los microservicios para inyectar el proxy de Istio
+kubectl rollout restart deployment microusers microproducts microorders frontend
+
+# 3. Verificar que los pods digan READY 2/2 (App + Proxy Envoy)
+kubectl get pods
+```
+
+---
+
+## 4. Configurar mTLS en Modo STRICT
+
+Por defecto, Istio opera en modo `PERMISSIVE`. Para forzar que **todo** el tráfico de la red interna se transmita de forma estrictamente cifrada mediante Mutual TLS, se aplica la siguiente política:
+
+```bash
+kubectl apply -f k8s/04-mtls-strict.yaml
+```
+
+*Verificación de estado de mTLS en un pod específico:*
+```bash
+istioctl x describe pod <nombre-del-pod>
+```
+(El resultado debe mostrar Workload mTLS mode: STRICT)
+
+### 4.1. Inspección de Certificados mTLS (Evidencia de la Rúbrica)
+Para demostrar que el tráfico está realmente cifrado, extraemos e inspeccionamos el certificado inyectado en el proxy Envoy:
+
+```bash
+# Reemplazar <nombre-del-pod> por el nombre real del pod
+istioctl proxy-config secret <nombre-del-pod> -o json | \
+jq -r '.dynamicActiveSecrets[] | select(.name=="default") | .secret.tlsCertificate.certificateChain.inlineBytes' | \
+base64 -d | openssl x509 -text -noout
+```
+
+---
+
+## 5. Acceder a Kiali y Visualizar la Topología
+
+Para verificar el correcto flujo de la malla de servicios y los certificados mTLS:
+
+```bash
+# Abrir el dashboard de Kiali en el navegador
+istioctl dashboard kiali
+```
+
+### Pasos de visualización:
+1. En la interfaz web de Kiali, ir a la sección **Traffic Graph**.
+2. En la barra superior, seleccionar el namespace **`default`** y ajustar el filtro de tiempo a **Last 1m**.
+3. Realizar peticiones navegando o comprando en la aplicación (`http://localhost:8080`) para observar las conexiones en tiempo real, las métricas de tráfico y los candados de seguridad activos en la malla.
