@@ -239,3 +239,102 @@ istioctl dashboard kiali
 1. En la interfaz web de Kiali, ir a la sección **Traffic Graph**.
 2. En la barra superior, seleccionar el namespace **`default`** y ajustar el filtro de tiempo a **Last 1m**.
 3. Realizar peticiones navegando o comprando en la aplicación (`http://localhost:8080`) para observar las conexiones en tiempo real, las métricas de tráfico y los candados de seguridad activos en la malla.
+
+# 🛡️ Requerimiento 3.3: Circuit Breaker (Outlier Detection)
+
+## ⚠️ Nota Importante sobre la Configuración
+Istio tiene una regla de precedencia estricta: si un `VirtualService` inyecta fallos (como los retries del R3.4), este puede interferir con la detección de errores del Circuit Breaker. 
+**Para probar este requerimiento correctamente, es obligatorio NO tener aplicado el archivo `06-resiliencia-virtual-service.yaml`.**
+
+```bash
+# Asegurarse de que el archivo de retries NO esté aplicado
+kubectl delete -f k8s/06-resiliencia-virtual-service.yaml --ignore-not-found
+```
+
+---
+
+## 1. Aplicar las Reglas de Resiliencia
+Vamos a aplicar el `DestinationRule` que configura el Circuit Breaker y un `EnvoyFilter` que inyecta errores 503 **directamente en el servidor** (para que el frontend reciba errores reales de red).
+
+```bash
+kubectl apply -f k8s/05-circuit-breaker.yaml
+kubectl apply -f k8s/98-envoy-fault-server.yaml
+```
+
+---
+
+## 2. Preparar el Entorno Visual
+Abre una terminal para exponer el frontend y otra para Kiali:
+
+```bash
+# Terminal 1: Exponer el frontend
+kubectl port-forward svc/frontend 8080:5001
+
+# Terminal 2: Abrir Kiali
+istioctl dashboard kiali
+```
+
+---
+
+## 3. El "Antes" (Estado Saludable)
+Verifica el estado actual de los pods de `microproducts` desde la perspectiva del `frontend`:
+
+```bash
+istioctl proxy-config endpoint $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") --cluster "outbound|5003||microproducts.default.svc.cluster.local"
+```
+
+> **¿Qué esperar?** Verás las dos IPs de los pods con el estado `OUTLIER CHECK: OK`. 
+
+---
+
+## 4. Generar el Caos
+1. Ve a tu navegador en `http://localhost:8080`.
+2. Inicia sesión y entra a la sección de **Productos**.
+3. Haz clic en el botón **"Get Products"** (o en **"Create Product"** llenando los campos) unas 10 a 15 veces rápidamente.
+4. *(Nota: La interfaz no mostrará un mensaje de error visible porque el JavaScript del frontend solo imprime los errores en la consola. Para ver que los errores 503 realmente están llegando, puedes presionar **F12** en tu navegador, ir a la pestaña **Network (Red)** y verás las peticiones fallando con el código HTTP **503**).*
+
+---
+
+## 5. El "Después" (Circuit Breaker Activado)
+Vuelve a ejecutar **exactamente el mismo comando** del Paso 3:
+
+```bash
+istioctl proxy-config endpoint $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") --cluster "outbound|5003||microproducts.default.svc.cluster.local"
+```
+
+> **¿Qué esperar?** Al menos uno de los pods ahora mostrará `OUTLIER CHECK: FAILED`. Esto significa que Istio detectó los 5 errores consecutivos y expulsó temporalmente al pod del balanceo de carga para proteger el sistema. *(Toma una captura de esto).*
+
+---
+
+## 6. Evidencia Numérica (Métricas del Proxy)
+Para obtener la prueba definitiva del aislamiento de instancias, ejecuta el siguiente comando que extrae las métricas del proxy Envoy:
+
+```bash
+kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") -c istio-proxy -- pilot-agent request GET stats | grep -E "ejections_enforced_total|ejections_consecutive_5xx|ejections_enforced_consecutive_5xx|ejections_overflow"
+```
+
+> **¿Qué esperar?** Verás contadores mayores a 0, por ejemplo:
+> * `ejections_enforced_total: 3` (El pod fue expulsado 3 veces).
+> * `ejections_consecutive_5xx: 5` (Se disparó la expulsión al alcanzar 5 errores 503 consecutivos).
+> * `ejections_overflow: 4` (Demuestra que la regla `maxEjectionPercent: 50` evitó deshabilitar más de la mitad de la infraestructura).
+
+---
+
+## 7. Evidencia Visual en Kiali
+En la interfaz de Kiali:
+1. Dirígete a **Traffic Graph**.
+2. Selecciona el namespace `default` y ajusta el rango de tiempo a `Last 1m`.
+3. Activa las opciones de **Traffic Animation** y **Security** en el menú *Display*.
+
+> **¿Qué observar?** Las líneas de conexión hacia `microproducts` se tornarán de color **rojo** con un icono de **rayo** ⚡, representando el fallo de peticiones y la activación del mecanismo de protección.
+
+---
+
+## 8. Limpieza del Entorno
+Una vez capturadas las evidencias, es **obligatorio** eliminar el inyector de fallos para restablecer la comunicación habitual del sistema:
+
+```bash
+kubectl delete -f k8s/98-envoy-fault-server.yaml
+```
+
+*(El manifiesto `05-circuit-breaker.yaml` puede permanecer aplicado, ya que constituye la regla de resiliencia estándar para producción).*

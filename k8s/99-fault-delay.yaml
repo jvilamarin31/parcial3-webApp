@@ -1,0 +1,19 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: fault-delay-microproducts
+  namespace: default
+spec:
+  hosts:
+    - microproducts
+  http:
+    - fault:
+        delay:
+          percentage:
+            value: 100.0
+          fixedDelay: 2s
+      route:
+        - destination:
+            host: microproducts
+            port:
+              number: 5003

@@ -1,0 +1,70 @@
+# ==========================================
+# MICROPRODUCTS
+# ==========================================
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: microproducts-retry-timeout
+  namespace: default
+spec:
+  hosts:
+    - microproducts
+  http:
+    - route:
+        - destination:
+            host: microproducts
+            port:
+              number: 5003
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1s
+        retryOn: 5xx,reset,connect-failure
+
+# ==========================================
+# MICROORDERS
+# ==========================================
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: microorders-retry-timeout
+  namespace: default
+spec:
+  hosts:
+    - microorders
+  http:
+    - route:
+        - destination:
+            host: microorders
+            port:
+              number: 5004
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1s
+        retryOn: 5xx,reset,connect-failure
+
+# ==========================================
+# MICROUSERS
+# ==========================================
+---
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: microusers-retry-timeout
+  namespace: default
+spec:
+  hosts:
+    - microusers
+  http:
+    - route:
+        - destination:
+            host: microusers
+            port:
+              number: 5002
+      timeout: 5s
+      retries:
+        attempts: 3
+        perTryTimeout: 1s
+        retryOn: 5xx,reset,connect-failure

@@ -193,6 +193,10 @@ spec:
         app: frontend
       annotations:
         sidecar.istio.io/rewriteAppHTTPProbe: "true"
+        proxy.istio.io/config: |
+          proxyStatsMatcher:
+            inclusionRegexps:
+              - ".*outlier_detection.*"
     spec:
       containers:
       - name: frontend
