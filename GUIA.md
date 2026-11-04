@@ -254,11 +254,11 @@ kubectl delete -f k8s/06-resiliencia-virtual-service.yaml --ignore-not-found
 ---
 
 ## 1. Aplicar las Reglas de Resiliencia
-Vamos a aplicar el `DestinationRule` que configura el Circuit Breaker y un `EnvoyFilter` que inyecta errores 503 **directamente en el servidor** (para que el frontend reciba errores reales de red).
+Vamos a aplicar el `DestinationRule` que configura el Circuit Breaker y un `EnvoyFilter` (ubicado en la carpeta de pruebas) que inyecta errores 503 **directamente en el servidor**.
 
 ```bash
 kubectl apply -f k8s/05-circuit-breaker.yaml
-kubectl apply -f k8s/98-envoy-fault-server.yaml
+kubectl apply -f k8s/testing/98-envoy-fault-server.yaml
 ```
 
 ---
@@ -290,8 +290,8 @@ istioctl proxy-config endpoint $(kubectl get pod -l app=frontend -o jsonpath="{.
 ## 4. Generar el Caos
 1. Ve a tu navegador en `http://localhost:8080`.
 2. Inicia sesión y entra a la sección de **Productos**.
-3. Haz clic en el botón **"Get Products"** (o en **"Create Product"** llenando los campos) unas 10 a 15 veces rápidamente.
-4. *(Nota: La interfaz no mostrará un mensaje de error visible porque el JavaScript del frontend solo imprime los errores en la consola. Para ver que los errores 503 realmente están llegando, puedes presionar **F12** en tu navegador, ir a la pestaña **Network (Red)** y verás las peticiones fallando con el código HTTP **503**).*
+3. Haz clic en el botón **"Get Products"** (o en **"Create Product"**) unas 10 a 15 veces rápidamente.
+4. *(Nota: Presiona **F12** en tu navegador, ve a la pestaña **Network (Red)** y verás las peticiones fallando con el código HTTP **503**).*
 
 ---
 
@@ -302,12 +302,12 @@ Vuelve a ejecutar **exactamente el mismo comando** del Paso 3:
 istioctl proxy-config endpoint $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") --cluster "outbound|5003||microproducts.default.svc.cluster.local"
 ```
 
-> **¿Qué esperar?** Al menos uno de los pods ahora mostrará `OUTLIER CHECK: FAILED`. Esto significa que Istio detectó los 5 errores consecutivos y expulsó temporalmente al pod del balanceo de carga para proteger el sistema. *(Toma una captura de esto).*
+> **¿Qué esperar?** Al menos uno de los pods ahora mostrará `OUTLIER CHECK: FAILED`. Esto significa que Istio detectó los 5 errores consecutivos y expulsó temporalmente al pod del balanceo de carga.
 
 ---
 
 ## 6. Evidencia Numérica (Métricas del Proxy)
-Para obtener la prueba definitiva del aislamiento de instancias, ejecuta el siguiente comando que extrae las métricas del proxy Envoy:
+Para obtener la prueba definitiva del aislamiento de instancias, ejecuta el siguiente comando:
 
 ```bash
 kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") -c istio-proxy -- pilot-agent request GET stats | grep -E "ejections_enforced_total|ejections_consecutive_5xx|ejections_enforced_consecutive_5xx|ejections_overflow"
@@ -316,25 +316,80 @@ kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metad
 > **¿Qué esperar?** Verás contadores mayores a 0, por ejemplo:
 > * `ejections_enforced_total: 3` (El pod fue expulsado 3 veces).
 > * `ejections_consecutive_5xx: 5` (Se disparó la expulsión al alcanzar 5 errores 503 consecutivos).
-> * `ejections_overflow: 4` (Demuestra que la regla `maxEjectionPercent: 50` evitó deshabilitar más de la mitad de la infraestructura).
 
 ---
 
-## 7. Evidencia Visual en Kiali
-En la interfaz de Kiali:
-1. Dirígete a **Traffic Graph**.
-2. Selecciona el namespace `default` y ajusta el rango de tiempo a `Last 1m`.
-3. Activa las opciones de **Traffic Animation** y **Security** en el menú *Display*.
-
-> **¿Qué observar?** Las líneas de conexión hacia `microproducts` se tornarán de color **rojo** con un icono de **rayo** ⚡, representando el fallo de peticiones y la activación del mecanismo de protección.
-
----
-
-## 8. Limpieza del Entorno
-Una vez capturadas las evidencias, es **obligatorio** eliminar el inyector de fallos para restablecer la comunicación habitual del sistema:
+## 7. Limpieza del Entorno
+Una vez capturadas las evidencias, es **obligatorio** eliminar el inyector de fallos:
 
 ```bash
-kubectl delete -f k8s/98-envoy-fault-server.yaml
+kubectl delete -f k8s/testing/98-envoy-fault-server.yaml
 ```
 
-*(El manifiesto `05-circuit-breaker.yaml` puede permanecer aplicado, ya que constituye la regla de resiliencia estándar para producción).*
+---
+
+# ⏱️ Requerimiento 3.4: Retries, Timeouts y Backoff Exponencial
+
+## 1. Configuración Aplicada
+Se aplica el `VirtualService` que configura un timeout global de 5 segundos, 3 reintentos con un timeout de 1 segundo por intento. Istio aplica **backoff exponencial** de forma automática entre reintentos.
+
+```bash
+# Asegurarse de que el Circuit Breaker (05) no interfiera
+kubectl delete -f k8s/05-circuit-breaker.yaml --ignore-not-found
+
+# Aplicar las reglas de reintentos
+kubectl apply -f k8s/06-resiliencia-virtual-service.yaml
+
+# Aplicar el inyector de retraso (delay) de 2 segundos
+kubectl apply -f k8s/testing/98-envoy-fault-delay.yaml
+```
+
+---
+
+## 2. Preparar el Entorno Visual
+Abre una terminal para exponer el frontend y otra para Kiali:
+
+```bash
+# Terminal 1: Exponer el frontend
+kubectl port-forward svc/frontend 8080:5001
+
+# Terminal 2: Abrir Kiali
+istioctl dashboard kiali
+```
+
+---
+
+## 3. Prueba de Fault Injection (Delay y Timeout)
+1. Ve a tu navegador (`http://localhost:8080`) y presiona **F12** para abrir las herramientas de desarrollo.
+2. Ve a la pestaña **Network (Red)**.
+3. Entra a la sección de **Productos** y haz clic en **"Get Products"**.
+4. **Comportamiento:** Verás que la petición tarda varios segundos (aprox. 4000ms) y finalmente devuelve un error **`504 Gateway Timeout`** (o `200 OK` si logra responder en un reintento). Esto ocurre porque el delay (2s) supera el `perTryTimeout` (1s), forzando a Istio a cortar y reintentar la petición.
+
+---
+
+## 4. Evidencia Numérica (Métricas de Reintentos)
+Para demostrar que Istio está reintentando las peticiones internamente, ejecuta este comando:
+
+```bash
+kubectl exec -it $(kubectl get pod -l app=frontend -o jsonpath="{.items[0].metadata.name}") -c istio-proxy -- pilot-agent request GET stats | grep "microproducts.*upstream_rq_retry"
+```
+
+> **¿Qué esperar?** Verás contadores que aumentan con cada clic que hiciste en el navegador:
+> * `...upstream_rq_retry: 95` (Número total de reintentos).
+> * `...upstream_rq_retry_backoff_exponential: 95` (**Prueba clave:** demuestra que se aplicó espera exponencial entre reintentos).
+> * `...upstream_rq_retry_limit_exceeded: 31` (Peticiones que fallaron definitivamente tras agotar los 3 intentos).
+
+---
+
+## 5. Evidencia Visual en Kiali
+En Kiali -> **Traffic Graph**, con el filtro en `Last 1m`, verás las líneas de conexión hacia `microproducts` en color **rojo** y el porcentaje de error elevado, demostrando el estrés al que fue sometido el sistema.
+
+---
+
+## 6. Limpieza del Entorno
+Borra el inyector de delay y restaura las configuraciones de producción:
+
+```bash
+kubectl delete -f k8s/testing/98-envoy-fault-delay.yaml
+kubectl apply -f k8s/05-circuit-breaker.yaml
+```

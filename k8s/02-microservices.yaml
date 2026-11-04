@@ -197,6 +197,7 @@ spec:
           proxyStatsMatcher:
             inclusionRegexps:
               - ".*outlier_detection.*"
+              - ".*upstream_rq_retry.*"
     spec:
       containers:
       - name: frontend
