@@ -1,0 +1,24 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: memory-hog-engine
+  namespace: default
+spec:
+  appinfo:
+    appns: 'default'
+    applabel: 'app=microorders' # Atacamos el servicio de órdenes
+    appkind: 'deployment'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-memory-hog
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60'
+            - name: MEMORY_CONSUMPTION
+              value: '300' # Consumimos 300 MB (el límite del pod es 256Mi)
+            - name: TARGET_CONTAINER
+              value: 'microorders'
+            - name: PODS_AFFECTED_PERC
+              value: '100'

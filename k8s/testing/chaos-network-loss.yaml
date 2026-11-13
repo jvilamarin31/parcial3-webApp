@@ -1,0 +1,24 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: network-loss-engine
+  namespace: default
+spec:
+  appinfo:
+    appns: 'default'
+    applabel: 'app=microusers' # Atacamos el servicio de usuarios
+    appkind: 'deployment'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-loss
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60' # 60 segundos de caos
+            - name: NETWORK_PACKET_LOSS_PERCENTAGE
+              value: '50' # Se pierde el 50% de los paquetes
+            - name: TARGET_CONTAINER
+              value: 'microusers'
+            - name: PODS_AFFECTED_PERC
+              value: '100' # Ataca ambos pods

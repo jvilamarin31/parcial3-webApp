@@ -1,0 +1,24 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: cpu-hog-engine
+  namespace: default
+spec:
+  appinfo:
+    appns: 'default'
+    applabel: 'app=frontend' # Atacamos el frontend para ver el HPA
+    appkind: 'deployment'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-cpu-hog
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60' # 60 segundos de saturación
+            - name: CPU_CORES
+              value: '1' # Consume 1 núcleo completo de CPU
+            - name: TARGET_CONTAINER
+              value: 'frontend'
+            - name: PODS_AFFECTED_PERC
+              value: '100' # Ataca a ambos pods iniciales

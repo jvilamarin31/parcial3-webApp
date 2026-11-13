@@ -1,0 +1,22 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: pod-delete-engine
+  namespace: default
+spec:
+  appinfo:
+    appns: 'default'
+    applabel: 'app=microproducts' # Ataca a los pods de microproducts
+    appkind: 'deployment'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-delete
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60' # 1 minuto de caos
+            - name: CHAOS_INTERVAL
+              value: '10' # Mata un pod cada 10 segundos
+            - name: FORCE
+              value: 'false'

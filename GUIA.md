@@ -60,7 +60,7 @@ En la carpeta `k8s/` del repositorio se encuentran los manifiestos:
 ### 4.1 Iniciar el clúster de Minikube
 *(Nota: El flag `--force-systemd=true` es crucial en Linux para evitar errores de conexión con el API Server).*
 ```bash
-minikube start --driver=docker --cpus=2 --memory=4096 --force-systemd=true
+minikube start --driver=docker --cpus=6 --memory=7168 --force-systemd=true
 ```
 
 ### 4.2 Habilitar el servidor de métricas
@@ -148,7 +148,7 @@ Antes de desplegar Istio en el clúster, el entorno local de Kubernetes debe est
 
 ```bash
 # Iniciar el clúster si se encuentra detenido
-minikube start --driver=docker --cpus=2 --memory=4096
+minikube start --driver=docker --cpus=6 --memory=7168 --force-systemd=true
 
 # Instalar jq (necesario para leer los JSON de Istio y extraer los certificados)
 sudo apt update && sudo apt install -y jq
@@ -392,4 +392,288 @@ Borra el inyector de delay y restaura las configuraciones de producción:
 ```bash
 kubectl delete -f k8s/testing/98-envoy-fault-delay.yaml
 kubectl apply -f k8s/05-circuit-breaker.yaml
+```
+
+# 💥 Requerimiento 3.5: Ingeniería del Caos con LitmusChaos
+
+## 1. Requisitos Previos
+Para este requerimiento, utilizaremos LitmusChaos sin su interfaz gráfica (ChaosCenter) para optimizar los recursos de nuestro Minikube (evitando el consumo de MongoDB). Es necesario tener instalado `helm` en el host.
+
+```bash
+# Instalar Helm en el host (si no se tiene)
+curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+chmod 700 get_helm.sh
+./get_helm.sh
+rm get_helm.sh
+
+# Añadir el repositorio de Litmus
+helm repo add litmuschaos https://litmuschaos.github.io/litmus-helm/
+helm repo update
+```
+
+---
+
+## 2. Instalación del Operador de Litmus y los Experimentos
+
+Vamos a instalar únicamente el "Core" (el motor de ejecución) y descargar las 5 "recetas" de caos requeridas por la rúbrica.
+
+```bash
+# 1. Crear el namespace y desplegar el operador (sin la UI pesada)
+kubectl create namespace litmus
+helm install chaos-core litmuschaos/litmus-core --namespace litmus
+
+# 2. Aplicar los permisos necesarios (RBAC)
+kubectl apply -f k8s/testing/litmus-rbac.yaml
+
+# 3. Descargar los 5 experimentos de caos en el namespace de la app
+for fault in pod-delete pod-network-latency pod-cpu-hog pod-network-loss pod-memory-hog; do
+  kubectl apply -n default -f "https://hub.litmuschaos.io/api/chaos/master?file=faults/kubernetes/${fault}/fault.yaml"
+done
+
+# 4. Verificar que los 5 experimentos estén listos
+kubectl get chaosexperiments -n default
+```
+
+---
+
+## 3. Experimento 1: Pod Delete (Eliminación de Pods)
+
+**Hipótesis:** *"Si se elimina un pod del microservicio `microproducts`, Kubernetes lo recreará automáticamente gracias a las réplicas configuradas, manteniendo el servicio 100% disponible para el usuario."*
+
+### A. Configuración (ChaosEngine)
+En el repositorio ya se encuentra creado el archivo `k8s/testing/chaos-pod-delete.yaml`, el cual contiene la configuración para inyectar este fallo. Este archivo le indica a Litmus que ataque a los pods del deployment `microproducts` durante 60 segundos, eliminando un pod cada 10 segundos.
+
+### B. Ejecutar el Caos y Monitorear
+Aplica el archivo y abre terminales de monitoreo para ver la magia de la auto-recuperación de Kubernetes:
+
+```bash
+# Terminal 1: Lanzar el caos
+kubectl apply -f k8s/testing/chaos-pod-delete.yaml
+
+# Terminal 2: Ver los pods muriendo y renaciendo
+kubectl get pods -l app=microproducts -w
+
+# Terminal 3: Ver el estado del motor de caos
+kubectl get chaosengine -w
+```
+*Mientras se ejecuta (verás cómo los pods pasan a `Terminating` y luego se crean nuevos en `Pending` -> `Running`), ingresa al frontend (`http://localhost:8080`) y haz clic en "Get Products". La aplicación debe seguir respondiendo sin caerse.*
+
+### C. Obtener el Veredicto
+Espera a que el experimento termine por completo (el `chaosengine` pasará a estado `completed`, esto toma aprox. 1 a 2 minutos). Luego ejecuta este comando para obtener el resultado oficial de Litmus:
+
+```bash
+kubectl get chaosresult pod-delete-engine-pod-delete -o yaml
+```
+
+**¿Qué buscar en la salida?** 
+* `phase: Completed`
+* `verdict: Pass`
+* `probeSuccessPercentage: "100"`
+
+### D. Limpieza
+Una vez terminado y documentado, borra el motor de caos para dejar todo listo para el próximo experimento:
+
+```bash
+kubectl delete -f k8s/testing/chaos-pod-delete.yaml
+```
+
+## 3. Experimento 2: Network Delay (Latencia de Red)
+
+**Hipótesis:** *"Al inyectar 2 segundos de latencia en el microservicio `microorders`, las peticiones experimentarán demoras (Timeouts). Sin embargo, gracias a las políticas de resiliencia configuradas en Istio (Reintentos y Circuit Breaker), el sistema manejará la falla, expulsará temporalmente los pods afectados y se recuperará automáticamente sin colapsar."*
+
+### A. Comparación con el Steady State (Estado Estacionario)
+*   **Steady State (Antes del caos):** Las peticiones a `/api/orders` responden en un promedio de **9ms a 10ms** con código HTTP **200**.
+*   **Estado durante el caos:** Las peticiones registran un tiempo de respuesta de **~5000ms** devolviendo errores **504** (Gateway Timeout), seguido de fallos inmediatos **503** (Service Unavailable por Circuit Breaker).
+*   **Estado posterior al caos (Recuperación):** Las peticiones vuelven a responder en **~9ms** con código **200**.
+
+### B. Ejecución y Monitoreo (Paso a Paso)
+
+**1. Preparar el entorno (Terminal 1):**
+Abre el túnel hacia el frontend para poder acceder a la aplicación desde el navegador:
+```bash
+kubectl port-forward svc/frontend 8080:5001
+```
+
+**2. Monitorear el caos (Terminal 2):**
+Deja este comando corriendo para ver el estado del motor de caos. Verás cómo pasa a `active` y luego a `Completed`:
+```bash
+kubectl get chaosengine -w
+```
+
+**3. Lanzar el caos (Terminal 3):**
+Aplica el archivo YAML que inyecta la latencia:
+```bash
+kubectl apply -f k8s/testing/chaos-network-delay.yaml
+```
+
+### C. Generar Tráfico y Observar
+1. Ve a tu navegador en `http://localhost:8080`.
+2. Inicia sesión y entra a la sección **Order Management** (Órdenes).
+3. Presiona **F12** para abrir las herramientas de desarrollador y ve a la pestaña **Network (Red)**.
+4. Haz clic en el botón **"Get Orders"** varias veces durante el minuto que dura el caos.
+
+**Secuencia esperada en la pestaña Network:**
+*   **Peticiones 200 OK (rápidas):** Justo al inicio, antes de que la latencia se propague.
+*   **Peticiones 504 Gateway Timeout (~5000ms):** La latencia de 2s supera el `perTryTimeout` de Istio (1s). Istio reintenta 3 veces, pero al agotar el `timeout` global de 5s, devuelve el error 504.
+*   **Peticiones 503 Service Unavailable (rápidas):** El **Circuit Breaker** (R3.3) detecta los errores 504 y expulsa temporalmente los pods, rechazando nuevas peticiones de inmediato para no colgar al usuario.
+*   **Peticiones 200 OK (rápidas):** Al finalizar los 60s del caos, la red se restaura y el sistema vuelve a la normalidad.
+
+### D. Obtener el Veredicto (Evidencia)
+Espera a que el comando de la Terminal 2 muestre que el proceso ha terminado, o ejecuta este comando para ver la prueba oficial de Litmus:
+
+```bash
+kubectl get chaosresult network-delay-engine-pod-network-latency -o yaml
+```
+
+**¿Qué buscar?**
+*   `verdict: Pass`
+*   `probeSuccessPercentage: "100"`
+*   En la sección `targets`, deben aparecer los 2 pods de `microorders` atacados.
+
+*(Toma capturas de pantalla de la pestaña Network y de esta salida de terminal).*
+
+### E. Limpieza
+Una vez terminado y documentado, borra el motor de caos para dejar el clúster limpio:
+```bash
+kubectl delete -f k8s/testing/chaos-network-delay.yaml
+```
+
+## 5. Experimento 3: CPU Hog (Saturación de CPU)
+
+**Hipótesis:** *"Al inyectar una carga artificial de 1 núcleo de CPU en el microservicio `frontend`, el uso de CPU superará el umbral del 70% configurado en el HPA (R3.1). Kubernetes creará automáticamente nuevas réplicas para distribuir la carga, manteniendo la aplicación altamente disponible."*
+
+### A. Comparación con el Steady State
+*   **Steady State (Antes):** El HPA reporta **~3% de CPU** y mantiene **2 réplicas**.
+*   **Estado durante el caos:** El HPA reporta picos de **hasta 430% de CPU** y escala dinámicamente de **2 a 5 réplicas**.
+*   **Estado posterior:** Al terminar el caos, el uso de CPU baja a **~3%** y, tras el tiempo de enfriamiento, el HPA reduce las réplicas nuevamente a **2**.
+
+### B. Ejecución y Monitoreo (Paso a Paso)
+**1. Terminal 1 (Exponer la app):**
+```bash
+kubectl port-forward svc/frontend 8080:5001
+```
+
+**2. Terminal 2 (Monitorear el HPA en tiempo real):**
+```bash
+kubectl get hpa -w
+```
+
+**3. Terminal 3 (Monitorear la creación de nuevos pods):**
+```bash
+kubectl get pods -w | grep frontend
+```
+
+**4. Terminal 4 (Lanzar el caos):**
+```bash
+kubectl apply -f k8s/testing/chaos-cpu-hog.yaml
+```
+
+### C. Resultados Observados
+*(Nota para la sustentación: El HPA tarda un poco en reaccionar porque el `metrics-server` recolecta datos cada 15 segundos).*
+Mientras se navegaba por la aplicación, se observó cómo el HPA detectó el pico de estrés y creó nuevos pods de forma automática:
+```text
+frontend-hpa  Deployment/frontend  cpu: 4%/70%    2   5   2   162m
+frontend-hpa  Deployment/frontend  cpu: 430%/70%  2   5   2   163m
+frontend-hpa  Deployment/frontend  cpu: 430%/70%  2   5   4   163m
+frontend-hpa  Deployment/frontend  cpu: 84%/70%   2   5   5   164m
+frontend-hpa  Deployment/frontend  cpu: 3%/70%    2   5   5   165m
+```
+La aplicación web nunca dejó de responder, demostrando que el autoescalado absorbió el ataque.
+
+### D. Obtener el Veredicto (Evidencia)
+Espera a que el experimento termine y ejecuta:
+```bash
+kubectl get chaosresult cpu-hog-engine-pod-cpu-hog -o yaml
+```
+*   **Veredicto:** `verdict: Pass`
+*   **Targets:** Los 2 pods originales fueron atacados y revertidos a su estado normal.
+
+### E. Limpieza
+```bash
+kubectl delete -f k8s/testing/chaos-cpu-hog.yaml
+```
+
+## 3. Experimento 4: Network Loss (Pérdida de Paquetes)
+
+**Hipótesis:** *"Al inyectar una pérdida del 50% de paquetes de red en `microusers`, las peticiones experimentarán fallos intermitentes (errores 504) y demoras significativas. Sin embargo, gracias a las políticas de reintento configuradas en Istio (R3.4), algunas peticiones lograrán completarse exitosamente tras varios intentos, demostrando la tolerancia a fallos de la malla de servicios."*
+
+### A. Comparación con el Steady State
+*   **Steady State (Antes):** Peticiones estables con respuestas de **~7ms a 10ms** (200 OK).
+*   **Estado durante el caos:** Comportamiento errático. Se observan errores **504 Gateway Timeout** (al cumplirse el `timeout` de 5s de Istio) mezclados con **200 OK** lentos (de 1.5s a 4.3s) que lograron salvarse gracias a los reintentos.
+*   **Estado posterior:** La red se restaura y las peticiones vuelven a su latencia normal de **~7ms**.
+
+### B. Ejecución y Monitoreo (Paso a Paso)
+**1. Terminal 1 (Exponer la app):**
+```bash
+kubectl port-forward svc/frontend 8080:5001
+```
+**2. Terminal 2 (Monitorear el caos):**
+```bash
+kubectl get chaosengine -w
+```
+**3. Terminal 3 (Lanzar el caos):**
+```bash
+kubectl apply -f k8s/testing/chaos-network-loss.yaml
+```
+
+### C. Generar Tráfico
+1. Ir al navegador en `http://localhost:8080/users`.
+2. Hacer clic en "Get Users" repetidamente durante el minuto que dura el caos.
+3. **Observación clave en la pestaña Network:** Se observa cómo la red falla (504) pero Istio interviene reintentando, resultando en peticiones exitosas pero con latencias altas (ej. 2650ms) antes de volver a la normalidad.
+
+### D. Obtener el Veredicto (Evidencia)
+```bash
+kubectl get chaosresult network-loss-engine-pod-network-loss -o yaml
+```
+*   **Veredicto:** `verdict: Pass`
+*   **Targets:** Atacados y revertidos los 2 pods de `microusers`.
+
+### E. Limpieza
+```bash
+kubectl delete -f k8s/testing/chaos-network-loss.yaml
+```
+
+## 3. Experimento 5: Memory Hog (Saturación de Memoria)
+
+**Hipótesis:** *"Al inyectar un consumo de memoria (300MB) superior al límite configurado en el Deployment de `microorders` (256Mi), el kernel de Linux matará el contenedor (OOMKilled). Kubernetes lo reiniciará automáticamente y, gracias al balanceo de carga y al Circuit Breaker de Istio, el sistema sufrirá una interrupción mínima y se recuperará en segundos."*
+
+### A. Comparación con el Steady State
+*   **Steady State (Antes):** Peticiones rápidas de **~9ms a 10ms** (200 OK).
+*   **Estado durante el caos:** Los pods son asesinados por falta de memoria (`OOMKilled`). Istio detecta la caída y devuelve errores rápidos **503** (4-5ms) durante un breve lapso.
+*   **Estado posterior:** Kubernetes reinicia los pods en 1-12 segundos. Las peticiones vuelven a ser **200 OK** (~10ms).
+
+### B. Ejecución y Monitoreo (Paso a Paso)
+**1. Terminal 1 (Exponer la app):**
+```bash
+kubectl port-forward svc/frontend 8080:5001
+```
+**2. Terminal 2 (Monitorear reinicios y OOMKilled):**
+```bash
+kubectl get pods -w | grep microorders
+```
+**3. Terminal 3 (Lanzar el caos):**
+```bash
+kubectl apply -f k8s/testing/chaos-memory-hog.yaml
+```
+
+### C. Resultados Observados (Evidencia)
+Mientras se hacían peticiones desde el navegador, la terminal mostró cómo los pods morían y renacían:
+```text
+microorders-68b9cbfc59-kzx8c  1/2  OOMKilled  3 (73m ago)  3h22m
+microorders-68b9cbfc59-kzx8c  1/2  Running    4 (1s ago)   3h22m
+microorders-68b9cbfc59-t4bxq  1/2  OOMKilled  3 (73m ago)  3h22m
+microorders-68b9cbfc59-t4bxq  1/2  Running    4 (1s ago)   3h22m
+```
+En la pestaña **Network**, se observó una ráfaga de 5 errores `503` (mientras los pods reiniciaban), seguida inmediatamente por peticiones `200 OK` exitosas.
+
+### D. Obtener el Veredicto
+```bash
+kubectl get chaosresult memory-hog-engine-pod-memory-hog -o yaml
+```
+*   **Veredicto:** `verdict: Pass`
+*   **Targets:** Ambos pods fueron atacados y revertidos.
+
+### E. Limpieza
+```bash
+kubectl delete -f k8s/testing/chaos-memory-hog.yaml
 ```

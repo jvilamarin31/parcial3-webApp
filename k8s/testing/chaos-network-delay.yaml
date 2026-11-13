@@ -1,0 +1,24 @@
+apiVersion: litmuschaos.io/v1alpha1
+kind: ChaosEngine
+metadata:
+  name: network-delay-engine
+  namespace: default
+spec:
+  appinfo:
+    appns: 'default'
+    applabel: 'app=microorders'
+    appkind: 'deployment'
+  chaosServiceAccount: litmus-admin
+  experiments:
+    - name: pod-network-latency
+      spec:
+        components:
+          env:
+            - name: TOTAL_CHAOS_DURATION
+              value: '60' # 60 segundos 
+            - name: NETWORK_LATENCY
+              value: '2000' # 2 segundos de delay
+            - name: TARGET_CONTAINER
+              value: 'microorders'
+            - name: PODS_AFFECTED_PERC
+              value: '100' # Atacar a todos los pods
