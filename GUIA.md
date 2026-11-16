@@ -746,3 +746,44 @@ Una vez capturadas las evidencias, elimina el inyector de delay para restaurar l
 kubectl delete -f k8s/testing/98-envoy-fault-delay.yaml
 ```
 
+# 📊 Requerimiento 3.7: Dashboard de Resiliencia en Grafana
+
+## 1. Acceso a Grafana
+Grafana se instaló como addon de Istio. Para acceder a su interfaz, se expone el servicio en el puerto 3000:
+```bash
+kubectl port-forward svc/grafana -n istio-system 3000:3000
+```
+Abrir en el navegador: `http://localhost:3000` (usuario: `admin`, contraseña: `admin`).
+
+## 2. Importación del Dashboard Base
+En lugar de crear cada panel desde cero, se importó el **Istio Service Dashboard** oficial (ID `7636`) desde Grafana.com. Este dashboard incluye paneles preconfigurados para:
+*   Tasa de éxito por servicio (Success Rate).
+*   Latencia p50, p90 y p99.
+*   Tasa de errores HTTP (5xx).
+*   Volumen de peticiones (Request Volume).
+
+## 3. Personalización: Panel del Circuit Breaker
+Para cumplir con el requisito de visualizar el estado del Circuit Breaker, se añadió un panel manual en el dashboard con la siguiente consulta PromQL:
+```promql
+sum(rate(envoy_cluster_outlier_detection_ejections_enforced_total[5m])) by (cluster_name)
+```
+Este panel muestra la tasa de expulsiones de pods (ejections) por clúster. Valores mayores a 0 indican que el Circuit Breaker ha actuado ante errores consecutivos.
+
+## 4. Exportación y Almacenamiento en el Repositorio
+Para garantizar la reproducibilidad y evitar que la configuración se pierda al reiniciar el clúster (ya que el addon no tiene persistencia por defecto), se exportó el dashboard en formato JSON:
+1. En Grafana, ir a **Share -> Export -> Save to file**.
+2. Guardar el archivo en el repositorio en la ruta: `k8s/grafana/istio-resilience-dashboard.json`.
+
+## 5. Demostración en Tiempo Real (Evidencia)
+Para verificar que el dashboard refleja los cambios durante los experimentos de caos, se dejó Grafana abierto mientras se inyectaban errores 503 en `microproducts` usando el `EnvoyFilter`.
+
+**Resultados observados:**
+*   El panel personalizado **"Circuit Breaker Ejections"** mostró un pico inmediato, alcanzando un valor de **0.00672 expulsiones/segundo** para el clúster `outbound|5003||microproducts.default.svc.cluster.local`.
+*   Este pico demuestra visualmente que Istio detectó los errores y activó el mecanismo de protección en tiempo real.
+*   *(Nota: Para ver los datos en el resto de paneles, es necesario seleccionar el servicio específico en el menú desplegable superior del dashboard).*
+
+## 6. Limpieza
+```bash
+kubectl delete -f k8s/testing/98-envoy-fault-server.yaml --ignore-not-found
+kubectl delete -f k8s/testing/98-envoy-fault-delay.yaml --ignore-not-found
+```
