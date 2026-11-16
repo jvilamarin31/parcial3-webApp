@@ -677,3 +677,72 @@ kubectl get chaosresult memory-hog-engine-pod-memory-hog -o yaml
 ```bash
 kubectl delete -f k8s/testing/chaos-memory-hog.yaml
 ```
+
+# 🔍 Requerimiento 3.6: Trazas Distribuidas con Jaeger
+
+## 1. Configuración del Tracing
+Por defecto, Istio no envía trazas a Jaeger. Para habilitar la recolección de datos, se aplica un recurso `Telemetry`:
+
+```bash
+kubectl apply -f k8s/07-telemetry.yaml
+```
+
+Para acceder a la interfaz de Jaeger, se expone el servicio `tracing` del namespace de Istio:
+```bash
+# Terminal 1: Exponer Jaeger
+kubectl port-forward svc/tracing -n istio-system 16686:80
+```
+*(Abrir en el navegador: `http://localhost:16686/jaeger`)*
+
+---
+
+## 2. Generar un Cuello de Botella (Fault Injection)
+Para demostrar la capacidad de Jaeger para identificar problemas de rendimiento, vamos a simular que el microservicio `microproducts` está experimentando latencia extrema (2 segundos).
+
+**1. Terminal 2 (Exponer el frontend):**
+```bash
+kubectl port-forward svc/frontend 8080:5001
+```
+
+**2. Terminal 3 (Aplicar el retraso):**
+```bash
+kubectl apply -f k8s/testing/98-envoy-fault-delay.yaml
+```
+
+**3. Generar Tráfico:**
+Ve a tu navegador (`http://localhost:8080`), entra a la sección de **Productos** y haz clic en **"Get Products"** unas 5 veces.
+
+---
+
+## 3. Análisis de la Traza y Evidencia
+1. En la interfaz de Jaeger, en el menú izquierdo, selecciona el servicio **`frontend.default`**.
+2. En el campo **Max Duration**, escribe `3s` (para filtrar solo las peticiones afectadas por el delay).
+3. Haz clic en **"Find Traces"** y selecciona la traza de mayor duración.
+4. Se abrirá la vista de **Waterfall (Cascada)**.
+
+> **¿Qué observar?**
+> *   **La traza end-to-end** muestra que la petición completa del usuario tardó ~4 segundos.
+> *   **Cuello de botella identificado:** Se observan **4 Spans consecutivos** del servicio `microproducts`. ¿Por qué 4? Porque la petición original falló por el delay (2s) y entraron en acción los **3 reintentos configurados en Istio (R3.4)**. Cada intento duró exactamente **~1 segundo** (el `perTryTimeout` configurado).
+> *   La base de datos (`products-db`) y el `frontend` responden rápido, confirmando que el problema está en `microproducts`.
+
+*(Adjuntar captura de pantalla de la vista de Cascada en Jaeger y de la pestaña Network mostrando los errores 504).*
+
+---
+
+## 4. Propuesta de Mejora Documentada
+**Cuello de Botella Identificado:** El microservicio `microproducts` es el componente que introduce la mayor latencia (superando el límite de 1s por intento), degradando la experiencia del usuario al agotar los reintentos.
+
+**Propuestas de Mejora:**
+1.  **Capa de Caché:** Implementar Redis para almacenar en caché las respuestas del catálogo de productos y evitar consultar la base de datos en cada petición.
+2.  **Optimización de Base de Datos:** Revisar los planes de ejecución (`EXPLAIN ANALYZE`) y agregar índices a las columnas de búsqueda de la tabla `products`.
+3.  **Código:** Revisar si hay consultas N+1 o procesamiento síncrono pesado en Python que puedan ser optimizados o movidos a tareas asíncronas.
+
+---
+
+## 5. Limpieza del Entorno
+Una vez capturadas las evidencias, elimina el inyector de delay para restaurar la normalidad:
+
+```bash
+kubectl delete -f k8s/testing/98-envoy-fault-delay.yaml
+```
+
