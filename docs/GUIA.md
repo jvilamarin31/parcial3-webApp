@@ -538,7 +538,7 @@ Una vez terminado y documentado, borra el motor de caos para dejar el clúster l
 kubectl delete -f k8s/testing/chaos-network-delay.yaml
 ```
 
-## 5. Experimento 3: CPU Hog (Saturación de CPU)
+## 3. Experimento 3: CPU Hog (Saturación de CPU)
 
 **Hipótesis:** *"Al inyectar una carga artificial de 1 núcleo de CPU en el microservicio `frontend`, el uso de CPU superará el umbral del 70% configurado en el HPA (R3.1). Kubernetes creará automáticamente nuevas réplicas para distribuir la carga, manteniendo la aplicación altamente disponible."*
 
