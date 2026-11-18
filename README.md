@@ -1,268 +1,110 @@
-# microWebApp
+# Proyecto 3: Infraestructura Resiliente con Kubernetes, Service Mesh y Chaos Engineering
 
-Plataforma de e-commerce basada en **microservicios Flask** con persistencia desacoplada
-(una base de datos MySQL por microservicio), frontend como puerta de entrada única
-(API gateway con proxy inverso) y empaquetado reproducible con **Docker Compose**.
+**Asignatura:** Computación en la Nube
+**Integrantes:** 
+*   Juan Esteban Vila Marín
+*   Juan David Cuero Katar
+*   Jorge Andres Medina Urriata
+*   Juan Jose Solarte Pabon
+*   Alejandro Rodriguez Cortes
 
-Proyecto académico de **Computación en la Nube** (especificación completa en `PROJECT_SPEC.md`).
+## Descripción del Proyecto
+Este repositorio contiene la implementación de una arquitectura de microservicios desplegada en Kubernetes (Minikube) y potenciada con **Istio** como Service Mesh. El sistema implementa patrones de resiliencia (Circuit Breaker, Retries, Timeouts, mTLS) y ha sido validado mediante **Chaos Engineering** con **LitmusChaos** para garantizar su tolerancia a fallos. Además, cuenta con un stack completo de observabilidad (Kiali, Grafana, Jaeger) y documentación técnica detallada.
 
-## Features
+---
 
-- **Gestión de usuarios y autenticación:** CRUD de usuarios e inicio de sesión con sesión de Flask (cookie firmada).
-- **Catálogo e inventario de productos:** CRUD y endpoints dedicados de stock (`decrement`/`increment`).
-- **Órdenes de compra:** creación de órdenes multi-línea con validación de sesión, consulta de precios/existencias a `microProducts`, verificación de inventario **antes** de descontar, precio congelado al momento de la compra, rollback compensatorio ante fallos y consulta/listado de órdenes por usuario.
-- **Persistencia desacoplada:** cada microservicio usa su propia base de datos (`users_db`, `products_db`, `orders_db`).
-- **Frontend como API gateway:** el navegador solo habla con el frontend (rutas relativas `/api/...`); el frontend reenvía cada petición al microservicio correspondiente por variables de entorno (adiós a IPs/puertos hardcodeados).
-- **Arranque reproducible:** todo el sistema levanta con un solo `docker compose up --build -d`.
-- Descubrimiento de servicios con **Consul** (previsto en la Parte 3).
+## Estructura del Repositorio
 
-## Stack
+El repositorio está organizado de la siguiente manera para facilitar la navegación y reproducibilidad del entorno:
 
-| Tecnología | Detalle |
-|---|---|
-| Python | 3.10 |
-| Flask | 2.3.3 |
-| Flask-SQLAlchemy / Flask-Cors | ORM y CORS |
-| requests / python-dotenv | Proxy HTTP y carga de `.env` |
-| MySQL | 8.0 (una instancia/BD por microservicio) |
-| Docker / Docker Compose | Empaquetado y orquestación |
-
-## Estructura del proyecto
-
-```
-microWebApp/
-├── frontend/                  # UI Flask + proxy /api/* (puerto 5001)
-│   ├── web/                   # views.py (proxy), templates/, static/
-│   ├── Dockerfile
-│   └── .dockerignore
-├── microUsers/                # Gestión de usuarios y login (puerto 5002)
-│   ├── users/                 # controllers/, models/, views.py
-│   ├── db/users_db.sql        # Init de users_db (tabla users + juan/maria)
-│   ├── config.py, run.py
-│   ├── Dockerfile
-│   └── .dockerignore
-├── microProducts/             # Catálogo e inventario (puerto 5003)
-│   ├── products/              # controllers/, models/, views.py
-│   ├── db/products_db.sql     # Init de products_db (3 productos de ejemplo)
-│   ├── config.py, run.py
-│   ├── Dockerfile
-│   └── .dockerignore
-├── microOrders/               # Órdenes de compra (puerto 5004)
-│   ├── orders/                # controllers/, models/, views.py
-│   ├── db/orders_db.sql       # Init de orders_db (orders + order_items)
-│   ├── config.py, run.py
-│   ├── Dockerfile
-│   └── .dockerignore
-├── docker-compose.yml         # Orquestación completa (7 servicios + red + volúmenes)
-├── .env.example               # Variables globales para docker compose (raíz)
-└── PROJECT_SPEC.md            # Especificación del proyecto
+```text
+parcial3-webApp/
+├── README.md                          # Este archivo (Visión general del proyecto)
+├── LICENSE                            # Licencia del proyecto
+├── docker-compose.yml                 # Orquestación local (Parte 1 del curso)
+├── frontend/                          # Código fuente del Frontend (Flask)
+├── microUsers/                        # Código fuente del servicio de Usuarios
+├── microProducts/                     # Código fuente del servicio de Productos
+├── microOrders/                       # Código fuente del servicio de Órdenes
+│
+├── docs/                              # Documentación y Evidencias
+│   ├── GUIA.md                        # Guía paso a paso para desplegar y probar los requerimientos
+│   ├── RUNBOOK.md                     # Manual de operaciones e incidentes (R3.8)
+│   ├── INFORME_CAOS.md                # Informe detallado de los 5 experimentos de LitmusChaos (R3.5)
+│   ├── INFORME_OBSERVABILIDAD.md      # Análisis de trazas (Jaeger) y métricas (Grafana) (R3.6 y R3.7)
+│   └── img/                           # Capturas de pantalla usadas en los informes
+│
+└── k8s/                               # Manifiestos de Kubernetes (Producción)
+    ├── 01-databases.yaml              # Despliegue de las 3 BD MySQL (con volúmenes persistentes)
+    ├── 02-microservices.yaml          # Deployments y Services de los 4 microservicios
+    ├── 03-hpa.yaml                    # Horizontal Pod Autoscalers (Autoescalado por CPU)
+    ├── 04-mtls-strict.yaml            # PeerAuthentication de Istio (Cifrado estricto mTLS)
+    ├── 05-circuit-breaker.yaml        # DestinationRule de Istio (Outlier Detection)
+    ├── 06-resiliencia-virtual-service.yaml # VirtualServices de Istio (Retries y Timeouts)
+    ├── 07-telemetry.yaml              # Configuración de Tracing para Jaeger
+    ├── grafana/                       # Dashboard JSON exportado
+    │   └── istio-resilience-dashboard.json
+    └── testing/                       # Manifiestos de Pruebas y Caos (NO aplicar en producción)
+        ├── litmus-rbac.yaml           # Permisos para el runner de Litmus
+        ├── chaos-pod-delete.yaml      # ChaosEngine 1
+        ├── chaos-network-delay.yaml   # ChaosEngine 2
+        ├── chaos-cpu-hog.yaml         # ChaosEngine 3
+        ├── chaos-network-loss.yaml    # ChaosEngine 4
+        ├── chaos-memory-hog.yaml      # ChaosEngine 5
+        └── 98-envoy-*.yaml            # Inyectores de fallos (EnvoyFilters) para pruebas de Istio
 ```
 
-## Requisitos previos
+---
 
-- **Opción Docker (recomendada):** solo [Docker](https://www.docker.com/) con Compose v2 (`docker compose version`).
-- **Opción local:** Python 3.10, MySQL 8 y `pip`.
+## Documentación Clave
 
-## Configuración
+Para entender a profundidad la solución y cómo fue probada, consulte los siguientes documentos ubicados en la carpeta `docs/`:
 
-### Variables globales (solo Docker)
+1.  **[GUIA.md](./docs/GUIA.md):** El paso a paso técnico de cómo instalar herramientas, desplegar la arquitectura y ejecutar las pruebas de cada uno de los 8 requerimientos.
+2.  **[INFORME_CAOS.md](./docs/INFORME_CAOS.md):** La evidencia y el análisis de los 5 experimentos de Chaos Engineering, incluyendo hipótesis, ejecución, resultados y comparación con el estado estacionario.
+3.  **[INFORME_OBSERVABILIDAD.md](./docs/INFORME_OBSERVABILIDAD.md):** El análisis profundo de las trazas distribuidas en Jaeger (identificación del cuello de botella) y la configuración del dashboard de resiliencia en Grafana.
+4.  **[RUNBOOK.md](./docs/RUNBOOK.md):** El manual operativo (Runbook) que un ingeniero de guardia puede usar para diagnosticar y recuperar el sistema ante 3 tipos de incidentes simulados.
 
-Copia el archivo de ejemplo y completa los valores:
+---
+
+## Tecnologías Utilizadas
+
+*   **Orquestación:** Kubernetes (Minikube)
+*   **Service Mesh:** Istio (mTLS, Circuit Breaker, Retries)
+*   **Chaos Engineering:** LitmusChaos
+*   **Observabilidad:** Kiali (Topología), Grafana + Prometheus (Métricas), Jaeger (Trazas)
+*   **Contenedores:** Docker (imágenes personalizadas alojadas en Docker Hub)
+*   **Lenguaje:** Python (Flask) / JavaScript (Frontend)
+
+---
+
+## Inicio Rápido
+
+Para levantar todo el ecosistema desde cero y ver la magia de la resiliencia, siga estos comandos básicos (para el detalle completo vaya a la **[GUIA.md](./docs/GUIA.md)**):
 
 ```bash
-cp .env.example .env
+# 1. Clonar el repositorio
+git clone https://github.com/TU-USUARIO/parcial3-webApp.git
+cd parcial3-webApp
+
+# 2. Iniciar el clúster (se recomiendan al menos 6 CPUs y 7GB de RAM)
+minikube start --driver=docker --cpus=6 --memory=7168 --force-systemd=true
+minikube addons enable metrics-server
+
+# 3. Aplicar los manifiestos base de la aplicación
+kubectl apply -f k8s/01-databases.yaml
+kubectl apply -f k8s/02-microservices.yaml
+kubectl apply -f k8s/03-hpa.yaml
+
+# 4. Instalar Istio y aplicar las reglas de resiliencia
+istioctl install --set profile=demo -y
+kubectl label namespace default istio-injection=enabled
+kubectl rollout restart deployment microusers microproducts microorders frontend
+kubectl apply -f k8s/04-mtls-strict.yaml
+kubectl apply -f k8s/05-circuit-breaker.yaml
+kubectl apply -f k8s/06-resiliencia-virtual-service.yaml
+
+# 5. Exponer la aplicación
+kubectl port-forward svc/frontend 8080:5001
+# Abrir http://localhost:8080 (Usuario: juan / Contraseña: 123)
 ```
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `MYSQL_ROOT_PASSWORD` | Contraseña del root de los tres contenedores MySQL | `root` |
-| `DB_USER` | Usuario de aplicación creado en cada MySQL (con permisos solo sobre su BD) | `app` |
-| `DB_PASSWORD` | Contraseña del usuario de aplicación | `app_password` |
-| `SECRET_KEY` | Clave para firmar la sesión (debe ser la misma en frontend, microUsers y microOrders) | `secret123` |
-| `FRONTEND_PORT` | Puerto publicado del frontend en el host | `8080` |
-
-### Variables por microservicio (solo local)
-
-Cada microservicio tiene su `.env.example` (`microUsers/`, `microProducts/`, `microOrders/`).
-Sus `config.py` leen variables de entorno con valores por defecto que ya funcionan si tu MySQL
-usa `root`/`root` en `localhost` y las tres BD `*_db` están creadas:
-
-| Variable | Aplican a | Default |
-|---|---|---|
-| `MYSQL_HOST` | microUsers, microProducts, microOrders | `localhost` |
-| `MYSQL_USER` / `MYSQL_PASSWORD` | microUsers, microProducts, microOrders | `root` / `root` |
-| `MYSQL_DB` | microUsers / microProducts / microOrders | `users_db` / `products_db` / `orders_db` |
-| `PRODUCTS_SERVICE_URL` | microOrders (servidor a servidor) | `http://localhost:5003` |
-| `SECRET_KEY` | microUsers, microOrders, frontend | `secret123` |
-
-El frontend también lee `USERS_SERVICE_URL`, `PRODUCTS_SERVICE_URL` y `ORDERS_SERVICE_URL`
-(lado servidor, para el proxy). En Docker las inyecta `docker-compose.yml`
-(`http://microusers:5002`, `http://microproducts:5003`, `http://microorders:5004`);
-en local usan `http://localhost:5002/5003/5004`.
-
-## Cómo ejecutar
-
-> En ambas opciones, el flujo de usuario es el mismo: el navegador abre el frontend y
-> este reenvía `/api/...` al microservicio correspondiente.
-
-### Opción Docker (recomendada)
-
-Cada componente (`frontend`, `microUsers`, `microProducts`, `microOrders`) tiene su propio
-`Dockerfile` (imagen `python:3.10-slim`, instalación de dependencias y `python run.py`).
-El `docker-compose.yml` orquesta además un contenedor MySQL por microservicio con
-volumen nombrado (`users_db_data`, `products_db_data`, `orders_db_data`) y healthcheck;
-las bases de datos se inicializan automáticamente la primera vez con los scripts `db/*.sql`.
-Solo el frontend publica puerto al host (`8080`); los microservicios se comunican por la red
-interna `app_network` por nombre de contenedor.
-
-```bash
-# 1) Crear el .env a partir del ejemplo
-cp .env.example .env
-
-# 2) Construir y levantar todo
-docker compose up --build -d
-
-# 3) Verificar estado (las BD deben quedar 'healthy')
-docker compose ps
-
-# 4) Ver logs de un microservicio
-docker compose logs -f microorders
-```
-
-La interfaz queda en <http://localhost:8080>.
-
-### Opción local
-
-Requisitos: Python 3.10, MySQL 8 corriendo y `pip`.
-
-1. Crea las bases de datos (usuarios/productos con datos de ejemplo):
-
-```bash
-mysql -u root -p < microUsers/db/users_db.sql
-mysql -u root -p < microProducts/db/products_db.sql
-mysql -u root -p < microOrders/db/orders_db.sql
-```
-
-2. Crea un entorno virtual e instala las dependencias:
-
-```bash
-python3 -m venv venv && source venv/bin/activate
-pip install Flask==2.3.3 Flask-Cors==4.0.0 Flask-SQLAlchemy==3.1.1 mysqlclient PyMySQL requests python-dotenv
-```
-
-> El código usa URI `mysql://...`, por lo que requiere `mysqlclient`. En Debian/Ubuntu
-> instala antes: `sudo apt install default-libmysqlclient-dev build-essential pkg-config python3-dev`.
-
-3. Correr cada microservicio (y el frontend) desde su carpeta, en terminales distintas:
-
-```bash
-cd microUsers    && python run.py   # puerto 5002
-cd microProducts && python run.py   # puerto 5003
-cd microOrders   && python run.py   # puerto 5004
-cd frontend      && python run.py   # puerto 5001
-```
-
-Abre <http://localhost:5001>. Si tu MySQL no usa `root`/`root`, copia el `.env.example`
-correspondiente a `.env` en cada microservicio y ajusta las credenciales.
-
-## Endpoints
-
-> En todos los entornos el navegador los consume **a través del frontend** con rutas
-> relativas (`/api/...`). Los listados a continuación corresponden a la API de cada
-> microservicio (vía proxy en el puerto del frontend, o directa en su puerto interno).
-
-### microUsers — `/api/...`
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `POST` | `/api/login` | Inicio de sesión (crea la cookie de sesión) |
-| `GET` | `/api/users` | Listar usuarios |
-| `GET` | `/api/users/{id}` | Ver detalle de un usuario |
-| `POST` | `/api/users` | Crear usuario |
-| `PUT` | `/api/users/{id}` | Actualizar usuario |
-| `DELETE` | `/api/users/{id}` | Eliminar usuario |
-
-### microProducts — `/api/...`
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `GET` | `/api/products` | Listar productos |
-| `GET` | `/api/products/{id}` | Ver producto (precio y existencias) |
-| `POST` | `/api/products` | Crear producto |
-| `PUT` | `/api/products/{id}` | Actualizar producto |
-| `DELETE` | `/api/products/{id}` | Eliminar producto |
-| `POST` | `/api/products/{id}/decrement` | Descontar stock (lo usa microOrders al crear una orden) |
-| `POST` | `/api/products/{id}/increment` | Reponer stock (lo usa microOrders para rollback) |
-
-### microOrders — `/api/...` (requiere sesión)
-
-| Método | Ruta | Descripción |
-|---|---|---|
-| `GET` | `/api/orders` | Listar órdenes del usuario en sesión |
-| `GET` | `/api/orders/{id}` | Ver una orden con sus ítems |
-| `POST` | `/api/orders` | Crear una orden |
-
-Códigos de error: `400` (petición mal formada), `401` (sin sesión), `404` (no existe),
-`409` (inventario insuficiente), `500` (error interno, p. ej. microProducts no disponible).
-
-Ejemplo de creación de orden:
-
-```json
-{
-  "products": [
-    { "product_id": 1, "quantity": 2 },
-    { "product_id": 3, "quantity": 1 }
-  ]
-}
-```
-
-## Prueba rápida (Docker)
-
-Usuarios de ejemplo: `juan` / `123` y `maria` / `456`.
-
-```bash
-# Login (guarda la cookie en cookies.txt)
-curl -s -c cookies.txt -X POST http://localhost:8080/api/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"juan","password":"123"}'
-
-# Catálogo
-curl -s http://localhost:8080/api/products
-
-# Crear una orden (2 laptops + 1 teclado)
-curl -s -b cookies.txt -X POST http://localhost:8080/api/orders \
-  -H 'Content-Type: application/json' \
-  -d '{"products":[{"product_id":1,"quantity":2},{"product_id":3,"quantity":1}]}'
-
-# Listar y consultar las órdenes del usuario
-curl -s -b cookies.txt http://localhost:8080/api/orders
-curl -s -b cookies.txt http://localhost:8080/api/orders/1
-
-# Casos de error
-curl -s -X POST http://localhost:8080/api/orders -H 'Content-Type: application/json' \
-  -d '{"products":[{"product_id":1,"quantity":1}]}'                  # 401 sin sesión
-curl -s -b cookies.txt http://localhost:8080/api/products/999        # 404
-curl -s -b cookies.txt -X POST http://localhost:8080/api/orders \
-  -H 'Content-Type: application/json' \
-  -d '{"products":[{"product_id":1,"quantity":999}]}'                # 409 stock insuficiente
-```
-
-Productos semilla: Laptop (3500.00, 10 uds), Mouse (25.50, 50 uds), Teclado (120.00, 30 uds).
-
-## Persistencia (Docker)
-
-Los datos viven en volúmenes nombrados y sobreviven al reinicio:
-
-```bash
-docker compose restart          # o docker compose down && docker compose up -d
-docker compose down             # detiene contenedores (conserva los volúmenes)
-docker compose down -v          # además borra los volúmenes (BORRA los datos)
-```
-
-## Documentación
-
-- `PROJECT_SPEC.md` — especificación y rúbrica del microproyecto (Partes 1-3).
-
-## Licencia
-
-[MIT](LICENSE)
